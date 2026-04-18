@@ -8,6 +8,15 @@ export default defineConfig({
     // @huggingface/transformers ships WASM files — Vite must not pre-bundle it
     exclude: ['@huggingface/transformers'],
   },
+  server: {
+    proxy: {
+      '/v2': {
+        target: 'http://localhost:8000',
+        rewrite: (path) => path.replace(/^\/v2/, ''),
+        changeOrigin: true,
+      },
+    },
+  },
   test: {
     environment: 'jsdom',
     globals: true,
