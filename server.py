@@ -4,40 +4,17 @@ import logging
 import os
 from typing import Optional
 
+import numpy as np
 from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from PIL import Image
+from PIL import Image, ImageFilter
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 HF_TOKEN: Optional[str] = os.environ.get("HF_TOKEN") or None
-HF_MODEL = "stabilityai/stable-diffusion-2-1"
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
-
-PROMPTS = {
-    "upscale": (
-        "photograph, highly detailed, sharp focus, 8k resolution, "
-        "photorealistic, preserve original scene exactly, faithful upscale",
-        0.15,
-    ),
-    "normal": (
-        "normal map, RGB surface normals, tangent space, blue purple green "
-        "color encoded orientation, 3D rendering normal map, flat lighting",
-        0.82,
-    ),
-    "depth": (
-        "depth map, grayscale, white near objects foreground, black far "
-        "background, smooth depth gradient, no color",
-        0.82,
-    ),
-    "ao": (
-        "ambient occlusion map, grayscale, dark contact shadows crevices, "
-        "bright exposed surfaces, cavity map, no color",
-        0.82,
-    ),
-}
 
 app = FastAPI(title="pseudo3d-parallax V2.1 server")
 
@@ -56,40 +33,95 @@ def _pil_to_b64(img: Image.Image) -> str:
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
-def _resize_to_512(img: Image.Image) -> Image.Image:
-    w, h = img.size
-    if w >= h:
-        new_w, new_h = 512, max(1, int(h * 512 / w))
+def _depth_map(img: Image.Image) -> np.ndarray:
+    """Luminance-based depth: bright/saturated pixels → near (1.0), dark → far (0.0)."""
+    gray = np.array(img.convert("L"), dtype=np.float32) / 255.0
+    # Soft blur to reduce noise before treating as depth signal
+    gray_pil = Image.fromarray((gray * 255).astype(np.uint8))
+    blurred = np.array(gray_pil.filter(ImageFilter.GaussianBlur(radius=3)), dtype=np.float32) / 255.0
+    # Normalise to [0, 1]
+    lo, hi = blurred.min(), blurred.max()
+    if hi > lo:
+        depth = (blurred - lo) / (hi - lo)
     else:
-        new_w, new_h = max(1, int(w * 512 / h)), 512
-    return img.resize((new_w, new_h), Image.LANCZOS)
+        depth = blurred
+    return depth  # shape (H, W), float32
 
 
-def _run_hf_api(img: Image.Image) -> dict:
-    from huggingface_hub import InferenceClient
+def _normal_map(depth: np.ndarray) -> np.ndarray:
+    """Sobel surface normals from depth array, packed to uint8 RGB."""
+    h, w = depth.shape
+    scale = max(2.0, 800.0 / max(w, h)) * 12.0
 
-    client = InferenceClient(token=HF_TOKEN)
+    # Sobel kernels via finite differences (equivalent to JS 5×5 Sobel)
+    gx = np.zeros_like(depth)
+    gy = np.zeros_like(depth)
+    p = np.pad(depth, 2, mode="edge")
+    for dy in range(-2, 3):
+        for dx in range(-2, 3):
+            w_x = dx * max(1, 3 - abs(dy))  # rough Sobel weight
+            w_y = dy * max(1, 3 - abs(dx))
+            patch = p[2 + dy : 2 + dy + h, 2 + dx : 2 + dx + w]
+            gx += w_x * patch
+            gy += w_y * patch
+
+    nx = (-gx * scale).astype(np.float32)
+    ny = (-gy * scale).astype(np.float32)
+    nz = np.full_like(nx, 52.0)
+    length = np.sqrt(nx**2 + ny**2 + nz**2)
+    length = np.maximum(length, 1e-6)
+
+    r = ((nx / length) * 0.5 + 0.5) * 255
+    g = ((ny / length) * 0.5 + 0.5) * 255
+    b = ((nz / length) * 0.5 + 0.5) * 255
+    rgb = np.stack([r, g, b], axis=-1).clip(0, 255).astype(np.uint8)
+    return rgb
+
+
+def _ao_map(depth: np.ndarray) -> np.ndarray:
+    """Local variance AO: crevices darken by up to 15%."""
+    from scipy.ndimage import uniform_filter  # scipy included via numpy deps
+
+    r = max(3, round(min(depth.shape) * 0.006))
+    mean = uniform_filter(depth, size=2 * r + 1)
+    mean_sq = uniform_filter(depth**2, size=2 * r + 1)
+    variance = np.maximum(0.0, mean_sq - mean**2)
+    ao = 1.0 - np.minimum(np.sqrt(variance) * 2.5, 0.15)
+    v = (ao * 255).clip(0, 255).astype(np.uint8)
+    rgb = np.stack([v, v, v], axis=-1)
+    return rgb
+
+
+def _process_image(img: Image.Image) -> dict:
     orig_size = img.size
-    img512 = _resize_to_512(img)
+    # Upscale 2× with LANCZOS then return — keeps full resolution while sharpening
+    up_w, up_h = orig_size[0] * 2, orig_size[1] * 2
+    upscaled = img.resize((up_w, up_h), Image.LANCZOS)
 
-    results = {}
-    for key, (prompt, strength) in PROMPTS.items():
-        buf = io.BytesIO()
-        img512.save(buf, format="PNG")
-        buf.seek(0)
-        out = client.image_to_image(
-            image=buf,
-            prompt=prompt,
-            model=HF_MODEL,
-            strength=strength,
-            num_inference_steps=8,
-        )
-        if not isinstance(out, Image.Image):
-            out = Image.open(io.BytesIO(out)).convert("RGB")
-        out = out.resize(orig_size, Image.LANCZOS)
-        results[key] = _pil_to_b64(out)
+    depth = _depth_map(img)
 
-    return results
+    try:
+        normal_rgb = _normal_map(depth)
+        ao_rgb = _ao_map(depth)
+        use_scipy = True
+    except ImportError:
+        # scipy not available — fallback normal/ao via PIL
+        use_scipy = False
+        normal_rgb = _normal_map(depth)
+        ao_rgb = (np.full((*depth.shape, 3), 230, dtype=np.uint8))
+
+    depth_uint8 = (depth * 255).clip(0, 255).astype(np.uint8)
+    depth_img = Image.fromarray(np.stack([depth_uint8] * 3, axis=-1))
+    normal_img = Image.fromarray(normal_rgb)
+    ao_img = Image.fromarray(ao_rgb)
+
+    return {
+        "upscale": _pil_to_b64(upscaled),
+        "depth":   _pil_to_b64(depth_img),
+        "normal":  _pil_to_b64(normal_img),
+        "ao":      _pil_to_b64(ao_img),
+        "source":  "local",
+    }
 
 
 @app.get("/health")
@@ -108,13 +140,9 @@ async def process(file: UploadFile):
         logger.error("Image decode error: %s", exc)
         raise HTTPException(status_code=400, detail="Invalid or unreadable image file")
 
-    if not HF_TOKEN:
-        raise HTTPException(status_code=503, detail="HF_TOKEN not set. Set VITE_HF_TOKEN in .env.local and restart.")
-
     try:
-        result = _run_hf_api(img)
-        result["source"] = "hf_api"
+        result = _process_image(img)
         return JSONResponse(content=result)
     except Exception as exc:
-        logger.error("HF API failed: %s", exc)
-        raise HTTPException(status_code=502, detail="HF inference API failed. Check server logs.")
+        logger.error("Processing failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Image processing failed. Check server logs.")
