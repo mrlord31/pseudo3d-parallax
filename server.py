@@ -2,11 +2,8 @@ import base64
 import io
 import logging
 import os
-import threading
 from typing import Optional
 
-import torch
-from diffusers import StableDiffusionImg2ImgPipeline
 from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -17,7 +14,6 @@ logger = logging.getLogger(__name__)
 
 HF_TOKEN: Optional[str] = os.environ.get("HF_TOKEN") or None
 HF_MODEL = "stabilityai/stable-diffusion-2-1"
-LOCAL_MODEL = "segmind/tiny-sd"
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
 
 PROMPTS = {
@@ -43,7 +39,7 @@ PROMPTS = {
     ),
 }
 
-app = FastAPI(title="pseudo3d-parallax V2 server")
+app = FastAPI(title="pseudo3d-parallax V2.1 server")
 
 app.add_middleware(
     CORSMiddleware,
@@ -52,9 +48,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-_local_pipe: Optional[StableDiffusionImg2ImgPipeline] = None
-_local_pipe_lock = threading.Lock()
 
 
 def _pil_to_b64(img: Image.Image) -> str:
@@ -99,45 +92,6 @@ def _run_hf_api(img: Image.Image) -> dict:
     return results
 
 
-def _load_local_pipe():
-    global _local_pipe
-    if _local_pipe is not None:
-        return _local_pipe
-    with _local_pipe_lock:
-        if _local_pipe is not None:  # re-check after acquiring lock
-            return _local_pipe
-        dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-        _local_pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
-            LOCAL_MODEL,
-            torch_dtype=dtype,
-            safety_checker=None,
-            requires_safety_checker=False,
-        )
-        if torch.cuda.is_available():
-            _local_pipe = _local_pipe.to("cuda")
-    return _local_pipe
-
-
-def _run_local(img: Image.Image) -> dict:
-    pipe = _load_local_pipe()
-    orig_size = img.size
-    img512 = _resize_to_512(img)
-
-    results = {}
-    for key, (prompt, strength) in PROMPTS.items():
-        out = pipe(
-            prompt=prompt,
-            image=img512,
-            strength=strength,
-            num_inference_steps=8,
-            guidance_scale=7.5,
-        ).images[0]
-        out = out.resize(orig_size, Image.LANCZOS)
-        results[key] = _pil_to_b64(out)
-
-    return results
-
-
 @app.get("/health")
 async def health():
     return {"status": "ok", "hf_token": bool(HF_TOKEN)}
@@ -151,26 +105,16 @@ async def process(file: UploadFile):
     try:
         img = Image.open(io.BytesIO(raw)).convert("RGB")
     except Exception as exc:
-        print(f"[server] Image decode error: {exc}")
+        logger.error("Image decode error: %s", exc)
         raise HTTPException(status_code=400, detail="Invalid or unreadable image file")
 
-    result = None
-    source = None
+    if not HF_TOKEN:
+        raise HTTPException(status_code=503, detail="HF_TOKEN not set. Set VITE_HF_TOKEN in .env.local and restart.")
 
-    if HF_TOKEN:
-        try:
-            result = _run_hf_api(img)
-            source = "hf_api"
-        except Exception as exc:
-            logger.warning("HF API failed, falling back to local: %s", exc)
-
-    if result is None:
-        try:
-            result = _run_local(img)
-            source = "local"
-        except Exception as exc:
-            print(f"[server] All pipelines failed: {exc}")
-            raise HTTPException(status_code=500, detail="Map generation failed. Check server logs.")
-
-    result["source"] = source
-    return JSONResponse(content=result)
+    try:
+        result = _run_hf_api(img)
+        result["source"] = "hf_api"
+        return JSONResponse(content=result)
+    except Exception as exc:
+        logger.error("HF API failed: %s", exc)
+        raise HTTPException(status_code=502, detail="HF inference API failed. Check server logs.")
