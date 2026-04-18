@@ -318,7 +318,7 @@ export default function Controls({
 
       <div style={{ flex: 1 }} />
       <div style={{ padding: '10px 16px', fontSize: 10, color: '#223', textAlign: 'center' }}>
-        three.js · WebGL · pseudo3d-parallax v2.1
+        three.js · WebGL · pseudo3d-parallax v2.2
       </div>
     </div>
   );

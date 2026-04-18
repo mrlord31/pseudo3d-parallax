@@ -5,3 +5,10 @@ dist/
 *.local
 .claude/
 .venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+docs/superpowers/
+research/
+=*

@@ -144,7 +144,7 @@ export default function App() {
         <div style={overlayStyle} onClick={() => modelReady && setShowOverlay(false)}>
           <div style={overlayCardStyle} onClick={(e) => e.stopPropagation()}>
             <h1 style={{ fontSize: 22, marginBottom: 8, fontWeight: 400, letterSpacing: '0.04em' }}>
-              pseudo3d-parallax
+              pseudo3d-parallax <span style={{ fontSize: 13, color: '#4af', opacity: 0.7 }}>v2.2</span>
             </h1>
             <p style={{ color: '#556', fontSize: 13, marginBottom: 20, lineHeight: 1.6 }}>
               Simulates a lenticular lens sheet to create a depth-into-screen illusion.<br />
