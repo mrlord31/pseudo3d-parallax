@@ -2,6 +2,7 @@ import base64
 import io
 import logging
 import os
+import threading
 from typing import Optional
 
 import torch
@@ -16,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 HF_TOKEN: Optional[str] = os.environ.get("HF_TOKEN") or None
 HF_MODEL = "stabilityai/stable-diffusion-2-1"
+LOCAL_MODEL = "segmind/tiny-sd"
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
 
 PROMPTS = {
     "upscale": (
@@ -45,12 +48,13 @@ app = FastAPI(title="pseudo3d-parallax V2 server")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 _local_pipe: Optional[StableDiffusionImg2ImgPipeline] = None
+_local_pipe_lock = threading.Lock()
 
 
 def _pil_to_b64(img: Image.Image) -> str:
@@ -95,21 +99,27 @@ def _run_hf_api(img: Image.Image) -> dict:
     return results
 
 
-def _run_local(img: Image.Image) -> dict:
+def _load_local_pipe():
     global _local_pipe
-
-    if _local_pipe is None:
+    if _local_pipe is not None:
+        return _local_pipe
+    with _local_pipe_lock:
+        if _local_pipe is not None:  # re-check after acquiring lock
+            return _local_pipe
         dtype = torch.float16 if torch.cuda.is_available() else torch.float32
         _local_pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
-            "segmind/tiny-sd",
+            LOCAL_MODEL,
             torch_dtype=dtype,
             safety_checker=None,
             requires_safety_checker=False,
         )
         if torch.cuda.is_available():
             _local_pipe = _local_pipe.to("cuda")
+    return _local_pipe
 
-    pipe = _local_pipe
+
+def _run_local(img: Image.Image) -> dict:
+    pipe = _load_local_pipe()
     orig_size = img.size
     img512 = _resize_to_512(img)
 
@@ -136,10 +146,13 @@ async def health():
 @app.post("/process")
 async def process(file: UploadFile):
     raw = await file.read()
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="File too large (max 10 MB)")
     try:
         img = Image.open(io.BytesIO(raw)).convert("RGB")
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Cannot decode image: {exc}")
+        print(f"[server] Image decode error: {exc}")
+        raise HTTPException(status_code=400, detail="Invalid or unreadable image file")
 
     result = None
     source = None
@@ -156,8 +169,8 @@ async def process(file: UploadFile):
             result = _run_local(img)
             source = "local"
         except Exception as exc:
-            logger.error("Local pipeline also failed: %s", exc)
-            raise HTTPException(status_code=500, detail=f"All pipelines failed: {exc}")
+            print(f"[server] All pipelines failed: {exc}")
+            raise HTTPException(status_code=500, detail="Map generation failed. Check server logs.")
 
     result["source"] = source
     return JSONResponse(content=result)
