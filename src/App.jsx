@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import Controls from './components/Controls.jsx';
 import { ParallaxRenderer } from './components/ParallaxRenderer.js';
 import { HeadTracker } from './components/HeadTracker.js';
-import { generateAllMaps, preloadDepthModel } from './components/DepthMapGenerator.js';
+import { generateAllMaps } from './components/DepthMapGenerator.js';
 import { loadImage } from './utils/imageUtils.js';
 import demoImageUrl from './resources/sample_image.png';
 
@@ -27,25 +27,10 @@ export default function App() {
   const [statusMsg,    setStatusMsg]    = useState('');
   const [statusLevel,  setStatusLevel]  = useState('info'); // 'info'|'warn'|'error'
   const [showOverlay,  setShowOverlay]  = useState(true);
-  const [modelReady,   setModelReady]   = useState(false);
+  const [modelReady,   setModelReady]   = useState(true);
   const [modelProgress, setModelProgress] = useState(0);
   const [animating,    setAnimating]    = useState(false);
   const animatingRef = useRef(false);
-
-  // ── Model preload on startup ─────────────────────────────────────────────────
-
-  useEffect(() => {
-    preloadDepthModel(
-      (p) => setModelProgress(Math.round(p)),
-      () => {},
-    ).then(() => {
-      setModelReady(true);
-      setModelProgress(100);
-    }).catch(() => {
-      // Preload failed — still allow usage (will retry on process)
-      setModelReady(true);
-    });
-  }, []);
 
   // ── Renderer init ────────────────────────────────────────────────────────────
 
@@ -120,11 +105,12 @@ export default function App() {
       setShowOverlay(false);
     } catch (err) {
       console.error('[App] Failed to load scene:', err);
+      setStatusMsg('Generation failed. Is the server running? Check the console.');
+      setStatusLevel('error');
+      setShowOverlay(false);
     } finally {
       setIsProcessing(false);
       setProgress(0);
-      setStatusMsg('');
-      setStatusLevel('info');
     }
   }, []);
 
@@ -214,6 +200,11 @@ export default function App() {
         </div>
       )}
 
+      {/* Error banner — shown after processing fails */}
+      {!isProcessing && statusLevel === 'error' && statusMsg && (
+        <div style={errorBannerStyle}>{statusMsg}</div>
+      )}
+
       <Controls
         settings={settings}
         setSettings={setSettings}
@@ -292,6 +283,21 @@ const progressTrackStyle = {
 const progressFillStyle = {
   height: '100%', background: '#4af',
   borderRadius: 1, transition: 'width 0.2s ease',
+};
+
+const errorBannerStyle = {
+  position: 'absolute',
+  bottom: 16, left: '50%',
+  transform: 'translateX(-50%)',
+  padding: '10px 20px',
+  background: 'rgba(30,10,10,0.92)',
+  border: '1px solid #f55',
+  borderRadius: 6,
+  color: '#f55',
+  fontSize: 13,
+  letterSpacing: '0.04em',
+  zIndex: 40,
+  pointerEvents: 'none',
 };
 
 function Pill({ children }) {

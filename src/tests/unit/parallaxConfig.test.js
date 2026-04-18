@@ -83,23 +83,21 @@ describe('HeadTracker — direction convention guard', () => {
   });
 });
 
-describe('Depth model config guard', () => {
-  it('has depth-anything-v2-base as first model', () => {
-    expect(depthSrc).toContain('onnx-community/depth-anything-v2-base');
+describe('Depth model config guard — V2.1', () => {
+  it('uses V2 server URL /v2', () => {
+    expect(depthSrc).toContain("SERVER_URL = '/v2'");
   });
 
-  it('all models have needsInvert: true', () => {
-    const matches = [...depthSrc.matchAll(/needsInvert:\s*(true|false)/g)];
-    expect(matches.length).toBeGreaterThan(0);
-    matches.forEach(m => expect(m[1]).toBe('true'));
+  it('server probe uses 1500ms timeout', () => {
+    expect(depthSrc).toContain('AbortSignal.timeout(1500)');
   });
 
-  it('edge blur radius is 3% of min dimension', () => {
-    expect(depthSrc).toContain('Math.min(origW, origH) * 0.003');
+  it('does not contain ONNX model list', () => {
+    expect(depthSrc).not.toContain('DEPTH_MODELS');
   });
 
-  it('wide blur radius is 3% of min dimension', () => {
-    expect(depthSrc).toContain('Math.min(origW, origH) * 0.030');
+  it('does not export preloadDepthModel', () => {
+    expect(depthSrc).not.toContain('export async function preloadDepthModel');
   });
 
   it('normal map nz component is 52', () => {
