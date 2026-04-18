@@ -1,4 +1,4 @@
-# Integral Image — WebGL Parallax 3D Simulator
+# pseudo3d-parallax — WebGL Parallax 3D Simulator
 
 A browser-based proof of concept that simulates the visual effect of a **lenticular lens sheet** applied to a flat 2D image, creating a convincing depth-into-screen 3D illusion in real time.
 
