@@ -47,11 +47,11 @@ describe('App — model preload on mount', () => {
     await waitFor(() => expect(preloadDepthModel).toHaveBeenCalledTimes(1));
   });
 
-  it('shows "Loading AI model" while model is loading', async () => {
+  it('shows "Initialising pipeline" while model is loading', async () => {
     preloadDepthModel.mockReturnValue(new Promise(() => {}));
     render(<App />);
     await waitFor(() =>
-      expect(screen.getByText(/Loading AI model/i)).toBeInTheDocument()
+      expect(screen.getByText(/Initialising pipeline/i)).toBeInTheDocument()
     );
   });
 
@@ -78,14 +78,14 @@ describe('App — overlay behavior', () => {
   it('renders intro overlay on first load', () => {
     preloadDepthModel.mockReturnValue(new Promise(() => {}));
     render(<App />);
-    expect(screen.getByRole('heading', { name: /Integral Image/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /pseudo3d-parallax/i })).toBeInTheDocument();
   });
 
-  it('shows "First-time download" text while model is loading', async () => {
+  it('shows "Loading fallback depth model" text while model is loading', async () => {
     preloadDepthModel.mockReturnValue(new Promise(() => {}));
     render(<App />);
     await waitFor(() =>
-      expect(screen.getByText(/First-time download/i)).toBeInTheDocument()
+      expect(screen.getByText(/Loading fallback depth model/i)).toBeInTheDocument()
     );
   });
 });

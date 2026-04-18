@@ -248,7 +248,7 @@ export default function Controls({
 
       {/* Header */}
       <div style={css.header}>
-        <span>Integral Image</span>
+        <span>pseudo3d-parallax</span>
         <span style={css.fps}>{fps} fps</span>
       </div>
 
@@ -318,7 +318,7 @@ export default function Controls({
 
       <div style={{ flex: 1 }} />
       <div style={{ padding: '10px 16px', fontSize: 10, color: '#223', textAlign: 'center' }}>
-        three.js · WebGL · Integral Image v1.0
+        three.js · WebGL · pseudo3d-parallax v2.1
       </div>
     </div>
   );

@@ -158,7 +158,7 @@ export default function App() {
         <div style={overlayStyle} onClick={() => modelReady && setShowOverlay(false)}>
           <div style={overlayCardStyle} onClick={(e) => e.stopPropagation()}>
             <h1 style={{ fontSize: 22, marginBottom: 8, fontWeight: 400, letterSpacing: '0.04em' }}>
-              Integral Image
+              pseudo3d-parallax
             </h1>
             <p style={{ color: '#556', fontSize: 13, marginBottom: 20, lineHeight: 1.6 }}>
               Simulates a lenticular lens sheet to create a depth-into-screen illusion.<br />
@@ -173,13 +173,13 @@ export default function App() {
             {!modelReady ? (
               <div style={{ marginTop: 8 }}>
                 <div style={{ fontSize: 13, color: '#4af', marginBottom: 12, letterSpacing: '0.05em' }}>
-                  Loading AI model…
+                  Initialising pipeline…
                 </div>
                 <div style={progressTrackStyle}>
                   <div style={{ ...progressFillStyle, width: `${modelProgress}%` }} />
                 </div>
                 <div style={{ marginTop: 8, fontSize: 11, color: '#334' }}>
-                  First-time download — cached for future sessions
+                  Loading fallback depth model — cached for future sessions
                 </div>
               </div>
             ) : (
