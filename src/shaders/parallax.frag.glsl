@@ -58,9 +58,9 @@ void main() {
   }
 
   // ── Parallax displacement ────────────────────────────────────────────────────
-  // Far-anchored: background (depth=1) is static, foreground (depth=0) moves most.
+  // Convention: depth=1 (white) → near/foreground moves most, depth=0 (black) → far/static.
   // Quadratic curve: near objects dominate, mid-grays fall off quickly.
-  float nearness = pow(1.0 - depth, 2.0);
+  float nearness = pow(depth, 2.0);
 
   // Suppress displacement only at sharp depth discontinuities.
   // The full-res blur already softens most edges; this catches any remaining hard jumps.

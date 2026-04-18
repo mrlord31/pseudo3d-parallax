@@ -9,8 +9,8 @@
  *   generateMapsFromDepth → user-supplied depth map → derive normal + AO locally.
  *
  * Conventions:
- *   depth = 0 (black) → near / close to camera
- *   depth = 1 (white) → far / deep in scene
+ *   depth = 1 (white) → near / close to camera  (foreground)
+ *   depth = 0 (black) → far / deep in scene    (background)
  *
  * onProgress(0..100)  — numeric progress callback
  * onStatus(string)    — human-readable status message
