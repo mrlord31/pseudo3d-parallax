@@ -59,7 +59,7 @@ describe('App — overlay behavior', () => {
     const btn = screen.getByText(/Load Demo Scene/i);
     fireEvent.click(btn);
     await waitFor(() =>
-      expect(screen.getByText(/Generation failed/i)).toBeInTheDocument()
+      expect(screen.getByText(/server not running/i)).toBeInTheDocument()
     );
   });
 });

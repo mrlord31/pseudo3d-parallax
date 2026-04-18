@@ -28,8 +28,10 @@ async function _probeServer() {
   }
 }
 
+const MAP_LABELS = { upscale: 'Upscale', depth: 'Depth', normal: 'Normal', ao: 'AO' };
+
 async function _allMapsServer(imgElement, onProgress, onStatus) {
-  onStatus?.('Sending to V2 generative server…');
+  onStatus?.('Sending image to server…');
   onProgress?.(5);
 
   const canvas = document.createElement('canvas');
@@ -42,10 +44,31 @@ async function _allMapsServer(imgElement, onProgress, onStatus) {
   form.append('file', blob, 'image.png');
 
   onProgress?.(10);
-  onStatus?.('Generating maps with AI model…');
+  onStatus?.('Running pix2pix inference…');
 
-  const res = await fetch(`${SERVER_URL}/process`, { method: 'POST', body: form });
-  if (!res.ok) throw new Error(`Server error ${res.status}`);
+  // Poll /status while inference runs so the UI shows real progress
+  let pollId = setInterval(async () => {
+    try {
+      const s = await fetch(`${SERVER_URL}/status`).then((r) => r.json());
+      if (s.busy && s.current_map) {
+        const label = MAP_LABELS[s.current_map] ?? s.current_map;
+        onStatus?.(`Generating ${label} (${s.map_step}/${s.map_total})…`);
+        onProgress?.(10 + s.overall_pct * 0.85);
+      }
+    } catch { /* ignore poll errors */ }
+  }, 2000);
+
+  let res;
+  try {
+    res = await fetch(`${SERVER_URL}/process`, { method: 'POST', body: form });
+  } finally {
+    clearInterval(pollId);
+  }
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
+    throw new Error(err.detail ?? `Server error ${res.status}`);
+  }
 
   const data = await res.json();
   onProgress?.(95);
@@ -193,7 +216,7 @@ export function boxBlur(data, w, h, r) {
   return out;
 }
 
-export function normalizeInPlace(arr) {
+function normalizeInPlace(arr) {
   let min=Infinity, max=-Infinity;
   for (const v of arr) { if(v<min) min=v; if(v>max) max=v; }
   const range = max-min||1;

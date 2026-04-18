@@ -2,53 +2,96 @@
 
 A browser-based proof of concept that simulates the visual effect of a **lenticular lens sheet** applied to a flat 2D image, creating a convincing depth-into-screen 3D illusion in real time.
 
-Upload any image and the app generates depth, normal, and ambient occlusion maps — either through a **local V2 generative server** (Stable Diffusion img2img) or entirely in the browser using ONNX — then renders the parallax effect through a custom GLSL shader driven by your mouse, gyroscope, or webcam.
-
-![Parallax demo](docs/parallax_demo.gif)
+Upload any image. The app sends it to a local Python server that runs **instruct-pix2pix** (Stable Diffusion img2img) to generate depth, normal, AO, and upscale maps via targeted prompts. The resulting maps are rendered through a custom GLSL shader driven by your mouse, gyroscope, or webcam.
 
 ---
 
 ## Version History
 
 ### V1 — Browser-only ONNX pipeline
+All processing ran in the browser using **Depth Anything V2** via ONNX Runtime Web. Normal and AO maps were derived algorithmically from the depth map.
 
-All processing ran entirely in the browser with no server. Depth maps were generated using **Depth Anything V2** via ONNX Runtime Web (`@huggingface/transformers`). Normal and AO maps were derived algorithmically from the depth map (5×5 Sobel kernel for normals, local depth variance for AO).
+### V2 — HuggingFace Inference API
+A local Python server called the HF Inference API (`instruct-pix2pix`) to generate all maps generatively. Removed in V2.1 after the free HF API discontinued support for image-to-image inference providers.
 
-| Component | Implementation |
-|---|---|
-| Depth | Depth Anything V2 Base/Small (ONNX, ~90 MB, cached in browser) |
-| Normal | 5×5 Sobel kernel from depth (CPU, JavaScript) |
-| AO | Local variance from depth (CPU, JavaScript) |
-| Upscale | None |
+### V2.1 — HF API only, no fallback
+Removed V1 ONNX pipeline and local model fallback. Server called HF API directly. Removed when HF dropped free-tier image-to-image support entirely.
 
-**Limitation:** Normals derived from depth miss fine surface detail. AO from variance is approximate.
-
-### V2 — Local generative server
-
-A local Python server (`server.py`) runs at `localhost:8000` and processes images through a **Stable Diffusion img2img pipeline** using four targeted prompts. HuggingFace Inference API — no local model download. The browser probes `/v2/health` on load; if the server is up all maps are generated generatively, otherwise the app silently falls back to V1.
+### V2.2 — Local instruct-pix2pix (current)
+Replaced the broken HF API with a fully local **`timbrooks/instruct-pix2pix`** pipeline. Model is downloaded once (~2.1 GB fp16) and cached. All inference runs on-device via `diffusers`. Fixed depth convention to `white = near, black = far`. Added `/status` endpoint for real-time inference progress polling. Added inference timeout (300 s) with a clear GPU-required error if exceeded.
 
 | Component | Implementation |
 |---|---|
-| Upscale | SD img2img, strength 0.15 — faithful to original |
-| Normal | SD img2img, strength 0.82 — `"normal map, RGB surface normals, tangent space…"` |
-| Depth | SD img2img, strength 0.82 — `"depth map, grayscale, white near black far…"` |
-| AO | SD img2img, strength 0.82 — `"ambient occlusion map, dark crevices…"` |
+| Upscale | instruct-pix2pix — `"Make this a sharp high-resolution photograph…"` |
+| Depth | instruct-pix2pix — `"Depth map, white near, black far…"` |
+| Normal | instruct-pix2pix — `"Surface normal map, RGB-encoded…"` |
+| AO | instruct-pix2pix — `"Ambient occlusion map, dark crevices…"` |
 
-**Limitation:** Required a HuggingFace token + local Python server running. Local model fallback added complexity without benefit.
+**Depth convention:** `depth = 1 (white)` → near/foreground · `depth = 0 (black)` → far/background
 
-### V2.1 — HF API only, no local model (current)
+**Hardware note:** instruct-pix2pix on CPU is slow (~5–15 min per image with 3 steps). A GPU is strongly recommended for interactive use. The server auto-cancels inference after 300 s and returns a clear error.
 
-Removed the local `segmind/tiny-sd` fallback entirely. The server calls the **HuggingFace Inference API** directly — no model downloads, no torch/diffusers dependencies. Requirements reduced from ~2 GB to ~15 MB. If the server is not running the app falls back to V1 ONNX automatically.
+---
 
-| Component | Implementation |
-|---|---|
-| Upscale | HF API — `stabilityai/stable-diffusion-2-1` img2img, strength 0.15 |
-| Normal | HF API — SD img2img, strength 0.82 |
-| Depth | HF API — SD img2img, strength 0.82 |
-| AO | HF API — SD img2img, strength 0.82 |
+## Getting Started
 
-**Requires:** `VITE_HF_TOKEN` in `.env.local` and the Python server running locally.
-**Fallback:** V1 ONNX pipeline (automatic, if server not running).
+### 1. Download the model (one time, ~2.1 GB)
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python download_model.py
+```
+
+### 2. Start the Python server
+
+```bash
+./start_server.sh
+```
+
+Reads `HF_TOKEN` from `.env.local` (optional — not required for local inference). Model loads into memory on startup (~25 s). Server runs at `http://localhost:8000`.
+
+### 3. Start the frontend
+
+```bash
+npm install
+npm run dev
+```
+
+Open `http://localhost:5173`.
+
+### Running Tests
+
+```bash
+# JavaScript (unit + integration + component)
+npm test
+
+# Python E2E — server must be running
+.venv/bin/pytest test_server.py -v
+```
+
+---
+
+## Architecture
+
+```
+Image upload
+    │
+    ▼
+DepthMapGenerator.js
+    ├── probes /v2/health (1.5 s timeout)
+    ├── POST /v2/process  ──────────────► server.py (FastAPI)
+    │       polls /v2/status every 2 s        └── instruct-pix2pix (local, fp16)
+    │                                               ├── upscale prompt
+    │                                               ├── depth prompt
+    │                                               ├── normal prompt
+    │                                               └── ao prompt
+    └── returns { upscaledUrl, depthUrl, normalUrl, aoUrl }
+            │
+            ▼
+    ParallaxRenderer.js
+        └── GLSL shader (parallax + normal lighting + AO)
+```
 
 ---
 
@@ -58,49 +101,21 @@ Removed the local `segmind/tiny-sd` fallback entirely. The server calls the **Hu
 |:---:|:---:|:---:|:---:|
 | ![Original](docs/sample_image.png) | ![Depth](docs/sample_depth_map.png) | ![Normal](docs/sample_normal_map.png) | ![AO](docs/sample_AO_map.png) |
 
-The **Depth Map** separates foreground (white/bright) from background (dark). The **Normal Map** encodes surface orientation as color — blues/purples face the camera, reds/greens face sideways. The **AO Map** reveals surface concavities as darker regions, adding perceived volume to the flat image.
+---
+
+## How the Parallax Shader Works
+
+A Three.js full-screen quad renders through `parallax.frag.glsl`:
+
+- **Convention:** `depth=1` (white) = near/foreground moves most; `depth=0` (black) = far/background stays fixed.
+- **Displacement:** `nearness = pow(depth, 2.0)` — quadratic so near objects dominate.
+- **Edge suppression:** `dFdx/dFdy` detects depth discontinuities; `smoothstep(0.006, 0.02)` suppresses fringing.
+- **Normal-map lighting:** virtual light follows viewer position, brightening surfaces facing the viewer.
+- **AO:** concavities darkened proportionally, suppressed at edges to prevent halos.
 
 ---
 
-## How It Works
-
-### 1. Map Generation
-
-When you upload an image, the app first probes the V2 Python server at `localhost:8000/v2/health`. If the server is running, all four maps (upscaled original, depth, normal, AO) are generated via **Stable Diffusion img2img**. If the server is not running, the app silently falls back to the V1 ONNX pipeline.
-
-**V2.1 server pipeline** (primary):
-- Runs `server.py` locally using FastAPI (no torch/diffusers required)
-- Calls HuggingFace Inference API (`stabilityai/stable-diffusion-2-1`) with your `HF_TOKEN` — no local model download
-
-**V1 ONNX fallback** (automatic if server not running):
-
-The app runs **Depth Anything V2** locally in your browser using ONNX Runtime Web via `@huggingface/transformers`. The model is downloaded once (~90 MB) and cached in the browser. Normal and AO maps are derived algorithmically from the depth map.
-
-**Model fallback chain** (V1, tries in order):
-| Model | Size | Notes |
-|---|---|---|
-| `onnx-community/depth-anything-v2-base` | ~90 MB | Primary — best quality |
-| `onnx-community/depth-anything-v2-small` | ~25 MB | Fallback |
-| `Xenova/depth-anything-small-hf` | ~49 MB | Last resort |
-
-### 2. Surface Map Generation (V1 CPU path)
-
-From the depth map, two additional maps are computed on the CPU:
-
-- **Normal Map** — derived from a 5×5 Sobel kernel applied at full resolution. Encodes surface orientation as RGB. Used for dynamic lighting that follows the viewer.
-- **Ambient Occlusion Map** — derived from local depth variance. Darker in concavities, brighter on exposed surfaces. Adds perceived volume.
-
-### 3. Parallax Rendering (WebGL / GLSL)
-
-A Three.js full-screen quad renders all four maps through a custom GLSL shader:
-
-- **Far-anchored parallax**: background (depth=1) stays fixed; foreground moves most. Displacement follows a quadratic curve `nearness = (1 - depth)²` so near objects feel strongly separated from the background.
-- **Edge suppression**: depth discontinuities are detected via `dFdx/dFdy` and suppressed with `smoothstep` to prevent fringing artifacts at object boundaries.
-- **Normal-map lighting**: a virtual light follows the viewer position, brightening surfaces facing the viewer and adding subtle depth cues.
-- **AO contribution**: concavities are darkened proportionally to local variance, also suppressed at edges.
-- **Movement cap**: parallax offset is hard-capped at ±0.35 to prevent visible smearing at extreme positions.
-
-### 4. Tracking Modes
+## Tracking Modes
 
 | Mode | How it works |
 |---|---|
@@ -111,65 +126,32 @@ A Three.js full-screen quad renders all four maps through a custom GLSL shader:
 
 ---
 
-## Getting Started
-
-### Option A — V2 generative pipeline (recommended)
-
-```bash
-# Terminal 1 — Python server (reads HF_TOKEN from .env.local automatically)
-pip install -r requirements.txt
-./start_server.sh
-```
-
-```bash
-# Terminal 2 — Vite dev server
-npm install
-npm run dev
-```
-
-Open `http://localhost:5173`. Maps are generated via the HuggingFace Inference API — no local model download needed.
-
-### Option B — Browser-only / V1 fallback
-
-```bash
-npm install
-npm run dev
-```
-
-If the Python server is not running, the app automatically falls back to the V1 ONNX pipeline (Depth Anything V2, ~90 MB, cached in browser on first load).
-
-### Running Tests
-
-```bash
-npm test
-```
-
----
-
 ## Tech Stack
 
 | Layer | Technology |
 |---|---|
-| Rendering | [Three.js](https://threejs.org/) r160, WebGL, GLSL ES |
-| V2.1 map generation | Python FastAPI + HuggingFace Inference API (Stable Diffusion img2img) |
-| V1 map generation | [@huggingface/transformers](https://github.com/huggingface/transformers.js) (ONNX Runtime Web) |
+| Rendering | Three.js r160, WebGL, GLSL ES |
+| Map generation | Python FastAPI + `diffusers` (instruct-pix2pix fp16) |
 | UI | React 18, inline styles |
 | Build | Vite 5 |
-| Tests | Vitest + Testing Library (58 tests) |
+| JS Tests | Vitest + Testing Library |
+| Python Tests | pytest + httpx (E2E server connectivity) |
 
 ---
 
 ## Project Structure
 
 ```
-server.py                        # V2.1 Python server (FastAPI + HF Inference API, no local models)
-requirements.txt                 # Python dependencies
-start_server.sh                  # Server launcher (reads token from .env.local)
+server.py              # FastAPI server — instruct-pix2pix inference
+download_model.py      # One-time model download script
+start_server.sh        # Server launcher (loads HF_TOKEN from .env.local)
+requirements.txt       # Python deps (torch, diffusers, transformers, accelerate)
+test_server.py         # Python E2E tests (server health + connectivity)
 src/
 ├── App.jsx                      # Root component, state management
 ├── components/
 │   ├── ParallaxRenderer.js      # Three.js WebGL renderer + uniforms
-│   ├── DepthMapGenerator.js     # V2 server → V1 ONNX → heuristic pipeline
+│   ├── DepthMapGenerator.js     # Server probe + map fetch + status polling
 │   ├── HeadTracker.js           # Mouse / gyro / webcam tracking
 │   ├── Controls.jsx             # Side panel UI
 │   └── ImageLoader.jsx          # Drag-and-drop image input
@@ -180,50 +162,19 @@ src/
 ├── utils/
 │   ├── mathUtils.js             # lerp, clamp, smooth, smooth2D
 │   └── imageUtils.js            # Image loading helpers
-├── resources/                   # Demo image + sample maps
+├── resources/                   # Demo image
 └── tests/
     ├── unit/                    # mathUtils, shader config, animation params
-    ├── integration/             # Depth pipeline + model fallback
-    └── component/               # App preload + overlay behavior
+    ├── integration/             # Depth pipeline integration
+    └── component/               # App overlay behavior
 ```
-
----
-
-## Key Shader Parameters
-
-These values are locked by the test suite — changing them will cause test failures, signaling an intentional configuration change.
-
-| Parameter | Value | Effect |
-|---|---|---|
-| `uSensitivity` | 2.2 | Global parallax strength multiplier |
-| Strength formula | `nearness × edgeFactor × 0.04` | Per-pixel displacement scale |
-| `uLightStrength` | 0.12 | Normal map lighting intensity |
-| AO factor | `× 0.4` | AO contribution weight |
-| Parallax cap | ±0.35 | Max offset before edge smearing |
-| Edge smoothstep | `(0.006, 0.02)` | Depth discontinuity suppression range |
-| Nearness curve | `pow(1 - depth, 2.0)` | Quadratic depth-to-displacement mapping |
-
----
-
-## Browser Support
-
-| Browser | Mouse | Gyro | Webcam (FaceDetector) |
-|---|---|---|---|
-| Chrome 113+ | ✓ | ✓ | ✓ |
-| Chrome Android | ✓ | ✓ | ✓ |
-| Firefox | ✓ | ✓ | motion fallback |
-| Safari iOS 15+ | ✓ | ✓* | motion fallback |
-
-*iOS requires a permission prompt for `DeviceOrientation` — handled automatically.
 
 ---
 
 ## Limitations
 
-- V2.1 server must be running locally for generative maps; the app silently falls back to V1 ONNX if not running.
-- Requires a valid `HF_TOKEN` in `.env.local` — HF free tier rate limits apply.
-- SD img2img via HF API takes 5–20 s per map (4 calls per image).
-- The depth model (V1 ONNX fallback) runs in the main thread — large images may cause a brief pause.
-- Webcam face tracking requires Chrome 113+ for the native `FaceDetector` API; other browsers use a motion-centroid fallback.
-- Parallax is a 2D illusion — extreme viewing angles reveal the flat nature of the source image.
-- Object boundary artifacts can appear where depth changes abruptly; edge-masked blur and shader edge suppression minimize but do not eliminate this.
+- Inference on CPU is slow — expect 5–15 min per image (3 steps). A GPU dramatically reduces this.
+- Server auto-cancels after 300 s and returns `503` with a clear message.
+- instruct-pix2pix was not trained specifically for technical map generation — output quality varies by image content.
+- Webcam face tracking requires Chrome 113+ for `FaceDetector`; other browsers use motion-centroid fallback.
+- Parallax is a 2D illusion — extreme angles reveal the flat source image.

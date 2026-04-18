@@ -41,8 +41,8 @@ describe('Parallax renderer — configuration guard', () => {
 });
 
 describe('GLSL shader — parallax formula guard', () => {
-  it('uses quadratic nearness curve: pow(1.0 - depth, 2.0)', () => {
-    expect(fragSrc).toContain('pow(1.0 - depth, 2.0)');
+  it('uses quadratic nearness curve: pow(depth, 2.0)', () => {
+    expect(fragSrc).toContain('pow(depth, 2.0)');
   });
 
   it('applies strength factor of 0.04', () => {
@@ -61,9 +61,9 @@ describe('GLSL shader — parallax formula guard', () => {
     expect(fragSrc).toContain('uParallaxOffset.x * 1.5');
   });
 
-  it('far-anchored: background depth=1 is static', () => {
-    // Displacement uses (1-depth), so depth=1 → nearness=0 → no displacement
-    expect(fragSrc).toContain('1.0 - depth');
+  it('near-anchored: foreground depth=1 moves most', () => {
+    // Convention: white=near. nearness = pow(depth, 2.0) → depth=1 moves most
+    expect(fragSrc).toContain('pow(depth, 2.0)');
   });
 });
 
@@ -76,10 +76,9 @@ describe('HeadTracker — direction convention guard', () => {
     expect(headTrackerSrc).toContain('SMOOTH_FACTOR = 0.08');
   });
 
-  it('animate Lissajous X frequency is 0.18 Hz', () => {
-    // Verified in App.jsx animate loop
-    const appSrc = rendererSrc; // Not applicable here — checked in integration
-    expect(headTrackerSrc).toBeTruthy(); // placeholder — see animationLoop.test.js
+  it('animate Lissajous X frequency is 0.18 Hz', async () => {
+    const appSrc = await import('../../App.jsx?raw').then(m => m.default);
+    expect(appSrc).toContain('0.18 * Math.PI * 2');
   });
 });
 

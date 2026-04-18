@@ -14,8 +14,8 @@ describe('DepthMapGenerator V2.1 — exports', () => {
   it('exports generateMapsFromDepth as a function', () => {
     expect(typeof generateMapsFromDepth).toBe('function');
   });
-  it('does NOT export preloadDepthModel', () => {
-    const mod = require('../../components/DepthMapGenerator.js');
+  it('does NOT export preloadDepthModel', async () => {
+    const mod = await import('../../components/DepthMapGenerator.js');
     expect(mod.preloadDepthModel).toBeUndefined();
   });
 });

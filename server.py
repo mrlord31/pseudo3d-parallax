@@ -1,5 +1,5 @@
 """
-pseudo3d-parallax V2.1 server — instruct-pix2pix local inference.
+pseudo3d-parallax V2.2 server — instruct-pix2pix local inference.
 
 Requires the model to be downloaded (~2.1 GB fp16):
     python download_model.py
@@ -7,11 +7,13 @@ Requires the model to be downloaded (~2.1 GB fp16):
 Then start with:
     ./start_server.sh
 """
+import asyncio
 import base64
 import io
 import logging
 import os
 import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -26,7 +28,8 @@ logger = logging.getLogger(__name__)
 HF_TOKEN: Optional[str] = os.environ.get("HF_TOKEN") or None
 MODEL_ID = "timbrooks/instruct-pix2pix"
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
-INFERENCE_STEPS = 7  # 5-8 is enough for map generation
+INFERENCE_STEPS = 3       # balance speed vs quality on CPU
+INFERENCE_TIMEOUT = 300   # seconds — fail fast if hardware is too slow
 
 PROMPTS = {
     "upscale": (
@@ -54,6 +57,7 @@ PROMPTS = {
 _pipeline = None
 _pipeline_error: Optional[str] = None
 _pipeline_lock = threading.Lock()
+_current_step: dict = {"map": None, "step": 0, "total": 0}
 
 
 def _is_model_cached() -> bool:
@@ -63,7 +67,7 @@ def _is_model_cached() -> bool:
 
 
 def _load_pipeline() -> None:
-    """Load the pipeline into memory (called once, thread-safe)."""
+    """Load the pipeline into memory once, thread-safe."""
     global _pipeline, _pipeline_error
     with _pipeline_lock:
         if _pipeline is not None:
@@ -72,6 +76,7 @@ def _load_pipeline() -> None:
             import torch
             from diffusers import StableDiffusionInstructPix2PixPipeline
 
+            torch.set_num_threads(os.cpu_count() or 4)
             logger.info("Loading instruct-pix2pix pipeline (fp16, CPU)…")
             pipe = StableDiffusionInstructPix2PixPipeline.from_pretrained(
                 MODEL_ID,
@@ -88,15 +93,12 @@ def _load_pipeline() -> None:
             raise
 
 
-# Kick off background model load on startup so first request doesn't wait cold
 def _preload_in_background() -> None:
+    """Start loading the model in the background so first request isn't cold."""
     if _is_model_cached():
-        t = threading.Thread(target=_load_pipeline, daemon=True)
-        t.start()
+        threading.Thread(target=_load_pipeline, daemon=True).start()
     else:
-        logger.warning(
-            "Model not cached — run `python download_model.py` to download it."
-        )
+        logger.warning("Model not cached — run `python download_model.py` first.")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -119,35 +121,49 @@ def _resize_to_512(img: Image.Image) -> Image.Image:
 # ── Inference ─────────────────────────────────────────────────────────────────
 
 def _run_pix2pix(img: Image.Image) -> dict:
+    global _current_step
     if _pipeline is None:
         if _pipeline_error:
             raise RuntimeError(f"Model failed to load: {_pipeline_error}")
-        # Model cached but not yet loaded (background thread still warming up)
         _load_pipeline()
 
     orig_size = img.size
     img512 = _resize_to_512(img)
-
     results = {}
+
     for key, prompt in PROMPTS.items():
-        logger.info("Generating '%s'…", key)
+        _current_step = {"map": key, "step": 0, "total": INFERENCE_STEPS}
+        logger.info("Generating '%s' (%d steps)…", key, INFERENCE_STEPS)
+
+        def _callback(pipe, step, timestep, kwargs):
+            _current_step["step"] = step + 1
+            logger.info("  %s step %d/%d", key, step + 1, INFERENCE_STEPS)
+            return kwargs
+
         out = _pipeline(
             prompt=prompt,
             image=img512,
             num_inference_steps=INFERENCE_STEPS,
             image_guidance_scale=1.5,
             guidance_scale=7.5,
+            callback_on_step_end=_callback,
         ).images[0]
         out = out.resize(orig_size, Image.LANCZOS)
         results[key] = _pil_to_b64(out)
 
+    _current_step = {"map": None, "step": 0, "total": 0}
     results["source"] = "pix2pix"
     return results
 
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 
-app = FastAPI(title="pseudo3d-parallax V2.2 server")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _preload_in_background()
+    yield
+
+app = FastAPI(title="pseudo3d-parallax V2.2 server", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -158,11 +174,6 @@ app.add_middleware(
 )
 
 
-@app.on_event("startup")
-async def startup_event():
-    _preload_in_background()
-
-
 @app.get("/health")
 async def health():
     return {
@@ -171,6 +182,23 @@ async def health():
         "model_cached": _is_model_cached(),
         "model_ready": _pipeline is not None,
         "model_error": _pipeline_error,
+    }
+
+
+@app.get("/status")
+async def status():
+    """Current inference progress — poll this while /process is running."""
+    s = _current_step
+    maps = list(PROMPTS.keys())
+    map_idx = maps.index(s["map"]) if s["map"] in maps else -1
+    total_steps = len(maps) * (s["total"] or INFERENCE_STEPS)
+    done_steps = max(0, map_idx) * (s["total"] or INFERENCE_STEPS) + s["step"]
+    return {
+        "busy": s["map"] is not None,
+        "current_map": s["map"],
+        "map_step": s["step"],
+        "map_total": s["total"],
+        "overall_pct": round(done_steps / total_steps * 100) if total_steps else 0,
     }
 
 
@@ -195,10 +223,21 @@ async def process(file: UploadFile):
         raise HTTPException(status_code=400, detail="Invalid or unreadable image file")
 
     try:
-        import asyncio
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, _run_pix2pix, img)
+        result = await asyncio.wait_for(
+            loop.run_in_executor(None, _run_pix2pix, img),
+            timeout=INFERENCE_TIMEOUT,
+        )
         return JSONResponse(content=result)
+    except asyncio.TimeoutError:
+        logger.error("Inference timeout after %ds", INFERENCE_TIMEOUT)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Inference exceeded {INFERENCE_TIMEOUT}s timeout. "
+                "A GPU is recommended for interactive use."
+            ),
+        )
     except Exception as exc:
         logger.error("Inference failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Inference failed: {exc}")

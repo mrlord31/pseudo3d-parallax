@@ -27,8 +27,6 @@ export default function App() {
   const [statusMsg,    setStatusMsg]    = useState('');
   const [statusLevel,  setStatusLevel]  = useState('info'); // 'info'|'warn'|'error'
   const [showOverlay,  setShowOverlay]  = useState(true);
-  const [modelReady,   setModelReady]   = useState(true);
-  const [modelProgress, setModelProgress] = useState(0);
   const [animating,    setAnimating]    = useState(false);
   const animatingRef = useRef(false);
 
@@ -105,7 +103,8 @@ export default function App() {
       setShowOverlay(false);
     } catch (err) {
       console.error('[App] Failed to load scene:', err);
-      setStatusMsg('Generation failed. Is the server running? Check the console.');
+      const msg = err?.message || 'Generation failed.';
+      setStatusMsg(msg.length > 120 ? msg.slice(0, 117) + '…' : msg);
       setStatusLevel('error');
       setShowOverlay(false);
     } finally {
@@ -141,7 +140,7 @@ export default function App() {
 
       {/* Intro overlay — demo button only available here */}
       {showOverlay && (
-        <div style={overlayStyle} onClick={() => modelReady && setShowOverlay(false)}>
+        <div style={overlayStyle} onClick={() => setShowOverlay(false)}>
           <div style={overlayCardStyle} onClick={(e) => e.stopPropagation()}>
             <h1 style={{ fontSize: 22, marginBottom: 8, fontWeight: 400, letterSpacing: '0.04em' }}>
               pseudo3d-parallax <span style={{ fontSize: 13, color: '#4af', opacity: 0.7 }}>v2.2</span>
@@ -155,29 +154,12 @@ export default function App() {
               <Pill>📱 Gyroscope on mobile</Pill>
               <Pill>📷 Face tracking via webcam</Pill>
             </div>
-
-            {!modelReady ? (
-              <div style={{ marginTop: 8 }}>
-                <div style={{ fontSize: 13, color: '#4af', marginBottom: 12, letterSpacing: '0.05em' }}>
-                  Initialising pipeline…
-                </div>
-                <div style={progressTrackStyle}>
-                  <div style={{ ...progressFillStyle, width: `${modelProgress}%` }} />
-                </div>
-                <div style={{ marginTop: 8, fontSize: 11, color: '#334' }}>
-                  Loading fallback depth model — cached for future sessions
-                </div>
-              </div>
-            ) : (
-              <>
-                <button style={overlayBtnStyle} onClick={handleDemo} disabled={isProcessing}>
-                  {isProcessing ? 'Loading…' : 'Load Demo Scene'}
-                </button>
-                <p style={{ marginTop: 12, fontSize: 11, color: '#334' }}>
-                  Or upload your own image via the panel →
-                </p>
-              </>
-            )}
+            <button style={overlayBtnStyle} onClick={handleDemo} disabled={isProcessing}>
+              {isProcessing ? 'Loading…' : 'Load Demo Scene'}
+            </button>
+            <p style={{ marginTop: 12, fontSize: 11, color: '#334' }}>
+              Or upload your own image via the panel →
+            </p>
           </div>
         </div>
       )}
