@@ -32,6 +32,53 @@ const DEPTH_MODELS = [
   { id: 'Xenova/depth-anything-small-hf',         size: '~49 MB', needsInvert: true },
 ];
 
+// ── V2 server strategy ────────────────────────────────────────────────────────
+const SERVER_URL = '/v2';   // proxied by Vite to localhost:8000
+let _serverAvailable = null; // null=unknown, true/false after first probe
+
+async function _probeServer() {
+  if (_serverAvailable !== null) return _serverAvailable;
+  try {
+    const res = await fetch(`${SERVER_URL}/health`, { signal: AbortSignal.timeout(1500) });
+    _serverAvailable = res.ok;
+  } catch {
+    _serverAvailable = false;
+  }
+  return _serverAvailable;
+}
+
+async function _allMapsServer(imgElement, onProgress, onStatus) {
+  onStatus?.('Sending to V2 generative server…');
+  onProgress?.(5);
+
+  const canvas = document.createElement('canvas');
+  canvas.width  = imgElement.naturalWidth;
+  canvas.height = imgElement.naturalHeight;
+  canvas.getContext('2d').drawImage(imgElement, 0, 0);
+  const blob = await new Promise((res) => canvas.toBlob(res, 'image/png'));
+
+  const form = new FormData();
+  form.append('file', blob, 'image.png');
+
+  onProgress?.(10);
+  onStatus?.('Generating maps with AI model…');
+
+  const res = await fetch(`${SERVER_URL}/process`, { method: 'POST', body: form });
+  if (!res.ok) throw new Error(`Server error ${res.status}`);
+
+  const data = await res.json();
+  onProgress?.(95);
+  onStatus?.('');
+
+  return {
+    upscaledUrl: `data:image/png;base64,${data.upscale}`,
+    depthUrl:    `data:image/png;base64,${data.depth}`,
+    normalUrl:   `data:image/png;base64,${data.normal}`,
+    aoUrl:       `data:image/png;base64,${data.ao}`,
+    source:      data.source,
+  };
+}
+
 let _modelMeta = null; // { needsInvert }
 
 async function getDepthPipeline(onProgress, onStatus) {
@@ -80,6 +127,17 @@ export async function preloadDepthModel(onProgress, onStatus) {
 
 // generateAllMaps — local inference. Returns { depthUrl, normalUrl, aoUrl }.
 export async function generateAllMaps(imgElement, onProgress, onStatus) {
+  // V2: try generative server first
+  if (await _probeServer()) {
+    try {
+      return await _allMapsServer(imgElement, onProgress, onStatus);
+    } catch (err) {
+      console.warn('[DepthMap] V2 server failed, falling back to ONNX:', err.message);
+      _serverAvailable = false;
+    }
+  }
+
+  // V1 fallback: ONNX Depth Anything
   try {
     return await _allMapsML(imgElement, onProgress, onStatus);
   } catch (err) {
